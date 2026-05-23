@@ -3,75 +3,40 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
-// GET /api/friends — lista amici + richieste pendenti
-export async function GET() {
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Non autenticato" }, { status: 401 });
 
-  const [accepted, pending, received] = await Promise.all([
-    // Amici accettati
-    prisma.friendship.findMany({
-      where: {
-        status: "ACCEPTED",
-        OR: [{ senderId: session.user.id }, { receiverId: session.user.id }],
-      },
-      include: {
-        sender: { select: { id: true, name: true, image: true, profile: { select: { totalPoints: true, level: true } } } },
-        receiver: { select: { id: true, name: true, image: true, profile: { select: { totalPoints: true, level: true } } } },
-      },
-    }),
-    // Richieste inviate in attesa
-    prisma.friendship.findMany({
-      where: { senderId: session.user.id, status: "PENDING" },
-      include: {
-        receiver: { select: { id: true, name: true, image: true } },
-      },
-    }),
-    // Richieste ricevute in attesa
-    prisma.friendship.findMany({
-      where: { receiverId: session.user.id, status: "PENDING" },
-      include: {
-        sender: { select: { id: true, name: true, image: true } },
-      },
-    }),
-  ]);
+  const { action } = await req.json();
 
-  const friends = accepted.map((f) => {
-    const friend = f.senderId === session.user.id ? f.receiver : f.sender;
-    return { friendshipId: f.id, ...friend };
-  });
+  const friendship = await prisma.friendship.findUnique({ where: { id } });
+  if (!friendship) return NextResponse.json({ error: "Non trovato" }, { status: 404 });
+  if (friendship.receiverId !== session.user.id) return NextResponse.json({ error: "Non autorizzato" }, { status: 403 });
 
-  return NextResponse.json({ friends, pending, received });
+  if (action === "accept") {
+    const updated = await prisma.friendship.update({
+      where: { id },
+      data: { status: "ACCEPTED" },
+    });
+    return NextResponse.json({ friendship: updated });
+  } else {
+    await prisma.friendship.delete({ where: { id } });
+    return NextResponse.json({ ok: true });
+  }
 }
 
-// POST /api/friends — invia richiesta amicizia per email
-export async function POST(req: NextRequest) {
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Non autenticato" }, { status: 401 });
 
-  const { email } = await req.json();
-  if (!email) return NextResponse.json({ error: "Email richiesta" }, { status: 400 });
+  const friendship = await prisma.friendship.findUnique({ where: { id } });
+  if (!friendship) return NextResponse.json({ error: "Non trovato" }, { status: 404 });
+  if (friendship.senderId !== session.user.id && friendship.receiverId !== session.user.id) {
+    return NextResponse.json({ error: "Non autorizzato" }, { status: 403 });
+  }
 
-  // Trova utente
-  const target = await prisma.user.findUnique({ where: { email } });
-  if (!target) return NextResponse.json({ error: "Utente non trovato" }, { status: 404 });
-  if (target.id === session.user.id) return NextResponse.json({ error: "Non puoi aggiungere te stesso" }, { status: 400 });
-
-  // Controlla se esiste già
-  const existing = await prisma.friendship.findFirst({
-    where: {
-      OR: [
-        { senderId: session.user.id, receiverId: target.id },
-        { senderId: target.id, receiverId: session.user.id },
-      ],
-    },
-  });
-  if (existing) return NextResponse.json({ error: "Richiesta già esistente" }, { status: 409 });
-
-  const friendship = await prisma.friendship.create({
-    data: { senderId: session.user.id, receiverId: target.id },
-    include: { receiver: { select: { id: true, name: true, image: true } } },
-  });
-
-  return NextResponse.json({ friendship });
+  await prisma.friendship.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
 }
