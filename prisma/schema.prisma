@@ -1,0 +1,290 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── AUTH ────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  password      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts        Account[]
+  sessions        Session[]
+  profile         Profile?
+  recipes         Recipe[]
+  cookedInstances CookedInstance[]
+  pointsLedger    PointsLedger[]
+  sentFriends     Friendship[]     @relation("FriendshipSender")
+  receivedFriends Friendship[]     @relation("FriendshipReceiver")
+  badges          UserBadge[]
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── PROFILE & LEVELS ────────────────────────────────────────────────────────
+
+enum Level {
+  BRONZO
+  ARGENTO
+  ORO
+  PLATINO
+  DIAMANTE
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  totalPoints Int      @default(0)
+  level       Level    @default(BRONZO)
+  weeklyPoints Int     @default(0)
+  monthlyPoints Int    @default(0)
+  streak      Int      @default(0) // giorni consecutivi
+  lastCookedAt DateTime?
+  bio         String?
+  updatedAt   DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([totalPoints])
+  @@index([weeklyPoints])
+}
+
+// ─── RECIPES ─────────────────────────────────────────────────────────────────
+
+enum Difficulty {
+  FACILE
+  MEDIA
+  DIFFICILE
+  MASTER
+}
+
+enum RecipeStatus {
+  PENDING     // in estrazione
+  PROCESSING  // AI sta lavorando
+  READY       // pronta
+  FAILED      // estrazione fallita
+}
+
+model Recipe {
+  id          String       @id @default(cuid())
+  userId      String
+  title       String
+  description String?      @db.Text
+  sourceUrl   String?      // URL video originale
+  sourceType  String?      // "tiktok" | "instagram" | "youtube" | "upload"
+  thumbnailUrl String?
+  
+  difficulty  Difficulty   @default(FACILE)
+  servings    Int          @default(4)
+  prepMinutes Int          @default(0)
+  cookMinutes Int          @default(0)
+  
+  basePoints  Int          @default(10)  // calcolati al momento dell'estrazione
+  multiplier  Float        @default(1.0)
+  finalPoints Int          @default(10)  // basePoints * multiplier, arrotondato
+  
+  hasSpecialTechniques Boolean @default(false)
+  specialTechniques    String[] // es. ["impasto", "frittura"]
+  
+  status      RecipeStatus @default(PENDING)
+  aiRaw       Json?        // risposta grezza AI per debug
+  
+  isPublic    Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ingredients     Ingredient[]
+  steps           RecipeStep[]
+  cookedInstances CookedInstance[]
+
+  @@index([userId])
+  @@index([difficulty])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Ingredient {
+  id       String  @id @default(cuid())
+  recipeId String
+  name     String
+  quantity Float?
+  unit     String? // "g" | "ml" | "cucchiai" | "tazze" | "qb" | ecc.
+  notes    String? // es. "tritato finemente"
+  order    Int     @default(0)
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+}
+
+model RecipeStep {
+  id          String  @id @default(cuid())
+  recipeId    String
+  order       Int
+  title       String  // es. "Prepara la pasta"
+  description String  @db.Text
+  durationMinutes Int? // timer in minuti (null = nessun timer)
+  tips        String? // suggerimento del chef
+  
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+}
+
+// ─── COOKED INSTANCES ────────────────────────────────────────────────────────
+
+model CookedInstance {
+  id         String   @id @default(cuid())
+  userId     String
+  recipeId   String
+  cookedAt   DateTime @default(now())
+  
+  rating     Int?     // 1–5 stelle
+  notes      String?  @db.Text  // "cosa cambieresti"
+  pointsEarned Int    @default(0)
+  
+  isPublic   Boolean  @default(false) // privacy: privato di default
+  
+  photos     Photo[]
+  pointsLedger PointsLedger[]
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([recipeId])
+  @@index([cookedAt])
+}
+
+model Photo {
+  id               String   @id @default(cuid())
+  cookedInstanceId String
+  url              String   // URL su Supabase Storage
+  caption          String?
+  order            Int      @default(0)
+  uploadedAt       DateTime @default(now())
+
+  cookedInstance CookedInstance @relation(fields: [cookedInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([cookedInstanceId])
+}
+
+// ─── POINTS LEDGER ───────────────────────────────────────────────────────────
+
+enum PointsReason {
+  RECIPE_COOKED    // ricetta cucinata con foto
+  BADGE_EARNED     // badge ottenuto
+  STREAK_BONUS     // bonus streak
+  REFERRAL         // invito amico
+}
+
+model PointsLedger {
+  id               String       @id @default(cuid())
+  userId           String
+  points           Int
+  reason           PointsReason
+  description      String?
+  cookedInstanceId String?
+  createdAt        DateTime     @default(now())
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cookedInstance CookedInstance? @relation(fields: [cookedInstanceId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ─── FRIENDS & LEADERBOARD ───────────────────────────────────────────────────
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model Friendship {
+  id         String           @id @default(cuid())
+  senderId   String
+  receiverId String
+  status     FriendshipStatus @default(PENDING)
+  createdAt  DateTime         @default(now())
+
+  sender   User @relation("FriendshipSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User @relation("FriendshipReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+  @@index([receiverId])
+}
+
+// ─── BADGES ──────────────────────────────────────────────────────────────────
+
+model Badge {
+  id          String      @id @default(cuid())
+  slug        String      @unique // es. "tre-difficili-fila"
+  name        String      // es. "3 Difficili di Fila"
+  description String
+  icon        String      // emoji o nome icona
+  condition   Json        // { type: "streak_difficult", count: 3 }
+  points      Int         @default(0) // punti bonus badge
+  
+  userBadges  UserBadge[]
+}
+
+model UserBadge {
+  id        String   @id @default(cuid())
+  userId    String
+  badgeId   String
+  earnedAt  DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badge Badge @relation(fields: [badgeId], references: [id])
+
+  @@unique([userId, badgeId])
+  @@index([userId])
+}
