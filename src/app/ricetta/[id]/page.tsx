@@ -4,16 +4,13 @@ import { prisma } from "@/lib/prisma";
 import { notFound, redirect } from "next/navigation";
 import { RecipeDetailClient } from "./RecipeDetailClient";
 
-interface Props {
-  params: { id: string };
-}
-
-export default async function RecipePage({ params }: Props) {
+export default async function RecipePage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await getServerSession(authOptions);
   if (!session) redirect("/auth/signin");
 
   const recipe = await prisma.recipe.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: {
       ingredients: { orderBy: { order: "asc" } },
       steps: { orderBy: { order: "asc" } },
